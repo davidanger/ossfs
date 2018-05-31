@@ -671,12 +671,8 @@ void FdEntity::Close(void)
   S3FS_PRN_DBG("[path=%s][fd=%d][refcnt=%d]", path.c_str(), fd, (-1 != fd ? refcnt - 1 : refcnt));
 
   if(-1 != fd){
-    AutoLock auto_lock(&fdent_lock);
-
-    if(0 < refcnt){
-      refcnt--;
-    }
-    if(0 == refcnt){
+    if (__sync_sub_and_fetch(&refcnt, 1) == 0) {
+      AutoLock auto_lock(&fdent_lock);
       if(0 != cachepath.size()){
         CacheFileStat cfstat(path.c_str());
         if(!pagelist.Serialize(cfstat, true)){
@@ -695,8 +691,7 @@ int FdEntity::Dup(void)
   S3FS_PRN_DBG("[path=%s][fd=%d][refcnt=%d]", path.c_str(), fd, (-1 != fd ? refcnt + 1 : refcnt));
 
   if(-1 != fd){
-    AutoLock auto_lock(&fdent_lock);
-    refcnt++;
+    __sync_fetch_and_add(&refcnt, 1);
   }
   return fd;
 }
@@ -879,10 +874,10 @@ bool FdEntity::OpenAndLoadAll(headers_t* pmeta, size_t* size, bool force_load)
 
 bool FdEntity::GetStats(struct stat& st)
 {
+  AutoLock auto_lock(&fdent_lock);
   if(-1 == fd){
     return false;
   }
-  AutoLock auto_lock(&fdent_lock);
 
   memset(&st, 0, sizeof(struct stat)); 
   if(-1 == fstat(fd, &st)){
@@ -899,8 +894,8 @@ int FdEntity::SetMtime(time_t time)
   if(-1 == time){
     return 0;
   }
+  AutoLock auto_lock(&fdent_lock);
   if(-1 != fd){
-    AutoLock auto_lock(&fdent_lock);
 
     struct timeval tv[2];
     tv[0].tv_sec = time;
@@ -928,6 +923,7 @@ int FdEntity::SetMtime(time_t time)
 
 bool FdEntity::UpdateMtime(void)
 {
+  AutoLock auto_lock(&fdent_lock);
   struct stat st;
   if(!GetStats(st)){
     return false;
@@ -949,18 +945,21 @@ bool FdEntity::GetSize(size_t& size)
 
 bool FdEntity::SetMode(mode_t mode)
 {
+  AutoLock auto_lock(&fdent_lock);
   orgmeta["x-oss-meta-mode"] = str(mode);
   return true;
 }
 
 bool FdEntity::SetUId(uid_t uid)
 {
+  AutoLock auto_lock(&fdent_lock);
   orgmeta["x-oss-meta-uid"] = str(uid);
   return true;
 }
 
 bool FdEntity::SetGId(gid_t gid)
 {
+  AutoLock auto_lock(&fdent_lock);
   orgmeta["x-oss-meta-gid"] = str(gid);
   return true;
 }
@@ -970,6 +969,7 @@ bool FdEntity::SetContentType(const char* path)
   if(!path){
     return false;
   }
+  AutoLock auto_lock(&fdent_lock);
   orgmeta["Content-Type"] = S3fsCurl::LookupMimeType(string(path));
   return true;
 }
@@ -1885,6 +1885,7 @@ FdEntity* FdManager::ExistOpen(const char* path, int existfd, bool ignore_existf
 
 void FdManager::Rename(const std::string &from, const std::string &to)
 {
+  AutoLock auto_lock(&FdManager::fd_manager_lock);
   fdent_map_t::iterator iter = fent.find(from);
   if(fent.end() != iter){
     // found
